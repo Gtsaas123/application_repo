@@ -1,53 +1,29 @@
-FROM hub.docker.hpecorp.net/hub/openjdk:8-jdk-alpine
-
-## Create a new user group ##
-RUN addgroup docker
-
-## Create a new non-root application user and add it to newly created group ##
-ARG USER=$appuser
-ARG PASS=$password
-ARG USER_ID=$userid
-ARG BUILD_ENV=$buildEnv
-RUN adduser -D $USER -u $USER_ID -G docker && echo "$USER:$PASS" | chpasswd
-
-## Switch to application user and copy application jar ##
-USER $USER
-COPY target/*.jar app.jar
-## Switch back to root user to load GTS and IAM certificates to keystore ##
-USER root
-VOLUME /logs
-
-COPY GTS-$BUILD_ENV-cert.crt $JAVA_HOME/jre/lib/security
-COPY java.security $JAVA_HOME/jre/lib/security
-RUN cd $JAVA_HOME/jre/lib/security
-RUN mkdir /etc/security
-COPY sslciphers.conf /etc/security
-RUN keytool -keystore $JAVA_HOME/jre/lib/security/cacerts -storepass changeit -noprompt -trustcacerts -importcert -alias gtsws3 -file $JAVA_HOME/jre/lib/security/GTS-$BUILD_ENV-cert.crt
-
-## Set New Relic Configuration Items ##
-RUN mkdir/local/container/newrelic/logs
-ADD ./newrelic/nr -p /usewrelic.jar /usr/local/container/newrelic/newrelic.jar
-ENV JAVA_OPTS="$JAVA_OPTS -javaagent:/usr/local/container/newrelic/newrelic.jar"
-ADD ./newrelic/newrelic.yml /usr/local/container/newrelic/newrelic.yml
-ENV JAVA_OPTS="$JAVA_OPTS -Dnewrelic.config.license_key='bea848dde8ab41e5f07794fc58f77a3ee5a3NRAL'"
-ENV JAVA_OPTS=-Dnewrelic.config.log_file_name=STDOUT
-
-## Set necessary permissions to application and new relic folders ##
-RUN chown $USER:docker /app.jar
-RUN chown -R $USER:docker /usr/local/container
-RUN mkdir -p /opt/cloudhost/logs/PPSlogging
-RUN chown -R $USER:docker /opt/cloudhost/logs/PPSlogging
-
-## Switch to application user before starting application##
-USER $USER
-
-EXPOSE 9201
-
-ENTRYPOINT java -javaagent:/usr/local/container/newrelic/newrelic.jar -Dnewrelic.environment=$deployEnv -jar /app.jar
-
-#ENTRYPOINT ["java", "-Djavax.net.debug=ssl:handshake:verbose", "-jar", "/app.jar"]
-
-# To run your container locally execute this commands
-# docker build -t globaltradegateway .
-# docker run -it -e "deployEnv=dev" --name globaltradegateway-c -p 9202:9202 -v c:/docker/logs:/logs -d globaltradegateway
-# docker logs -f globaltradegateway-c
+# Stage 1: Build stage for the application
+FROM node:18 AS build-stage  # Use an official Node.js image for the build environment
+WORKDIR /app                # Set the working directory inside the container
+ 
+# Copy package files and set npm configurations
+COPY package*.json /app/    # Copy the package.json and package-lock.json files to the working directory
+RUN npm config set strict-ssl false  # Disable strict SSL for npm (can be removed if SSL issues are resolved)
+RUN npm config set registry https://registry.npmjs.org  # Set the npm registry URL
+RUN npm install             # Install the dependencies
+ 
+# Copy application code and build the project
+COPY ./ /app/               # Copy the rest of the application code to the working directory
+ARG ENVVAR                  # Define a build argument for environment configuration
+RUN npm run build -- --output-path=./dist/gtcaasui --configuration $ENVVAR  # Build the project based on the provided environment
+ 
+# Stage 2: Final stage to serve the built application with Nginx
+FROM nginx:1.25-alpine      # Use the official Nginx image (lightweight and production-ready)
+COPY --from=build-stage /app/dist/gtcaasui/ /usr/share/nginx/html  # Copy the built application from the build stage
+COPY ./nginx.conf /etc/nginx/conf.d/default.conf  # Copy custom Nginx configuration
+ 
+# Expose the port on which the app will run
+EXPOSE 80                   # Expose port 80 for HTTP traffic
+ 
+# Command to run Nginx when the container starts
+CMD ["nginx", "-g", "daemon off;"]
+ 
+# Build and run commands for AWS ECR:
+# docker build -t 682033485284.dkr.ecr.us-east-1.amazonaws.com/ecr-gtsaas:latest .
+# docker run --name ecr-gtsaas-c -d -p 9199:80 682033485284.dkr.ecr.us-east-1.amazonaws.com/ecr-gtsaas:latest
