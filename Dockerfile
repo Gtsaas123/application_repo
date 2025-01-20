@@ -1,5 +1,5 @@
 # Stage 1: Build stage for the application
-FROM node:18 AS build-stage  # Use an official Node.js image for the build environment
+FROM node:18.0 AS build-stage  # Use an official Node.js image for the build environment
 WORKDIR /app                # Set the working directory inside the container
  
 # Copy package files and set npm configurations
